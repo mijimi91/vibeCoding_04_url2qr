@@ -1,0 +1,362 @@
+/**
+ * URL2QR - QR Code Generator & Downloader
+ * Interactive script for managing state transitions, QR generation, and JPG export.
+ */
+
+document.addEventListener('DOMContentLoaded', () => {
+  // DOM Elements
+  const body = document.body;
+  const qrForm = document.getElementById('qrForm');
+  const urlInput = document.getElementById('urlInput');
+  const btnSubmit = document.getElementById('btnSubmit');
+  const btnClear = document.getElementById('btnClear');
+  const inputBarWrapper = document.getElementById('inputBarWrapper');
+  const inputHint = document.getElementById('inputHint');
+
+  const qrStage = document.getElementById('qrStage');
+  const qrcodeContainer = document.getElementById('qrcode');
+  const qrCodeWrapper = document.getElementById('qrCodeWrapper');
+  const currentUrlDisplay = document.getElementById('currentUrlDisplay');
+  const copyUrlBtn = document.getElementById('copyUrlBtn');
+  const btnDownloadJpg = document.getElementById('btnDownloadJpg');
+  const logoBtn = document.getElementById('logoBtn');
+
+  const toastNotification = document.getElementById('toastNotification');
+  const toastMessage = document.getElementById('toastMessage');
+
+  let currentQrInstance = null;
+  let currentTargetUrl = '';
+  let toastTimer = null;
+
+  // Focus input automatically on load
+  urlInput.focus();
+
+  /* ==========================================================================
+     Clear Button Toggle
+     ========================================================================== */
+  urlInput.addEventListener('input', () => {
+    if (urlInput.value.trim().length > 0) {
+      btnClear.classList.add('visible');
+    } else {
+      btnClear.classList.remove('visible');
+    }
+  });
+
+  btnClear.addEventListener('click', () => {
+    urlInput.value = '';
+    btnClear.classList.remove('visible');
+    urlInput.focus();
+  });
+
+  /* ==========================================================================
+     Submit & QR Generation Handling
+     ========================================================================== */
+  qrForm.addEventListener('submit', handleGenerateQR);
+  btnSubmit.addEventListener('click', handleGenerateQR);
+
+  function handleGenerateQR(e) {
+    if (e) e.preventDefault();
+
+    let rawUrl = urlInput.value.trim();
+
+    // Validation: Empty check
+    if (!rawUrl) {
+      triggerShake();
+      showToast('변환할 URL을 입력해주세요.', 'error');
+      urlInput.focus();
+      return;
+    }
+
+    // Auto-prefix http/https if missing and looks like a domain
+    let processedUrl = rawUrl;
+    if (!/^https?:\/\//i.test(rawUrl)) {
+      if (rawUrl.includes('.') && !rawUrl.startsWith('data:') && !rawUrl.startsWith('mailto:')) {
+        processedUrl = 'https://' + rawUrl;
+      }
+    }
+
+    currentTargetUrl = processedUrl;
+    renderQRCode(processedUrl);
+    activateQrState(processedUrl);
+  }
+
+  function triggerShake() {
+    inputBarWrapper.classList.remove('shake');
+    void inputBarWrapper.offsetWidth; // Force reflow
+    inputBarWrapper.classList.add('shake');
+    setTimeout(() => {
+      inputBarWrapper.classList.remove('shake');
+    }, 450);
+  }
+
+  /* ==========================================================================
+     Render QR Code using QRCode library
+     ========================================================================== */
+  function renderQRCode(text) {
+    qrcodeContainer.innerHTML = '';
+
+    // Check if library is available
+    if (typeof QRCode === 'undefined') {
+      showToast('QR 라이브러리를 로드하는 중입니다. 잠시 후 다시 시도해주세요.', 'error');
+      return;
+    }
+
+    // Render with High Error Correction for maximum scanning reliability
+    currentQrInstance = new QRCode(qrcodeContainer, {
+      text: text,
+      width: 220,
+      height: 220,
+      colorDark: '#0d0f15',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.H
+    });
+
+    // Update display text
+    currentUrlDisplay.textContent = text;
+    currentUrlDisplay.title = text;
+  }
+
+  /* ==========================================================================
+     State Transition: Center -> Bottom + Center QR
+     ========================================================================== */
+  function activateQrState(url) {
+    if (body.classList.contains('initial-state')) {
+      body.classList.remove('initial-state');
+      body.classList.add('qr-active');
+    }
+
+    // Update hint text when in active mode
+    if (inputHint) {
+      inputHint.querySelector('.hint-text').innerHTML =
+        '새로운 URL을 입력하고 <strong>확인</strong>을 누르면 즉시 갱신됩니다.';
+    }
+  }
+
+  /* ==========================================================================
+     Download QR as JPG (Requirement #4)
+     ========================================================================== */
+  qrCodeWrapper.addEventListener('click', downloadQrAsJpg);
+  btnDownloadJpg.addEventListener('click', (e) => {
+    e.stopPropagation();
+    downloadQrAsJpg();
+  });
+
+  function downloadQrAsJpg() {
+    // Locate the canvas or image generated by QRCode.js
+    const qrCanvas = qrcodeContainer.querySelector('canvas');
+    const qrImg = qrcodeContainer.querySelector('img');
+
+    if (!qrCanvas && (!qrImg || !qrImg.src)) {
+      showToast('QR코드를 준비하는 중입니다. 잠시 후 다시 클릭해주세요.', 'error');
+      return;
+    }
+
+    // Create an offscreen high-res canvas with clean white background and quiet zone
+    const exportCanvas = document.createElement('canvas');
+    const padding = 28; // Margin around QR code
+
+    // Determine dimensions
+    let width = 220;
+    let height = 220;
+
+    if (qrCanvas && qrCanvas.width > 0) {
+      width = qrCanvas.width;
+      height = qrCanvas.height;
+    } else if (qrImg && qrImg.naturalWidth > 0) {
+      width = qrImg.naturalWidth;
+      height = qrImg.naturalHeight;
+    }
+
+    exportCanvas.width = width + padding * 2;
+    exportCanvas.height = height + padding * 2;
+
+    const ctx = exportCanvas.getContext('2d');
+    if (!ctx) return;
+
+    // 1. Fill solid white background (Critical: JPEG doesn't support transparency and turns black without this)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+    const executeDownload = () => {
+      try {
+        const jpgUrl = exportCanvas.toDataURL('image/jpeg', 0.98);
+
+        // Create sanitized filename based on domain or timestamp
+        let hostSlug = 'qrcode';
+        try {
+          const parsed = new URL(currentTargetUrl);
+          hostSlug = parsed.hostname.replace(/[^a-zA-Z0-9]/g, '_');
+        } catch {
+          hostSlug = 'url2qr';
+        }
+
+        const fileName = `${hostSlug}_${Date.now()}.jpg`;
+
+        // Trigger file download
+        const downloadLink = document.createElement('a');
+        downloadLink.href = jpgUrl;
+        downloadLink.download = fileName;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+
+        // Feedback
+        showToast(`🎉 "${fileName}" JPG 파일로 다운로드되었습니다!`);
+      } catch (err) {
+        console.error('Download error:', err);
+        showToast('이미지 다운로드 중 문제가 발생했습니다.', 'error');
+      }
+    };
+
+    // Draw source (Canvas preferred for sharpest vector/pixel fidelity, Img as fallback)
+    if (qrCanvas && qrCanvas.width > 0) {
+      ctx.drawImage(qrCanvas, padding, padding, width, height);
+      executeDownload();
+    } else if (qrImg && qrImg.src) {
+      if (qrImg.complete && qrImg.naturalWidth > 0) {
+        ctx.drawImage(qrImg, padding, padding, width, height);
+        executeDownload();
+      } else {
+        const tempImg = new Image();
+        tempImg.crossOrigin = 'anonymous';
+        tempImg.onload = () => {
+          ctx.drawImage(tempImg, padding, padding, width, height);
+          executeDownload();
+        };
+        tempImg.onerror = () => {
+          showToast('이미지 처리 중 오류가 발생했습니다.', 'error');
+        };
+        tempImg.src = qrImg.src;
+      }
+    }
+  }
+
+  /* ==========================================================================
+     Copy URL to Clipboard
+     ========================================================================== */
+  copyUrlBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!currentTargetUrl) return;
+
+    navigator.clipboard.writeText(currentTargetUrl)
+      .then(() => {
+        showToast('링크가 클립보드에 복사되었습니다.');
+      })
+      .catch(() => {
+        showToast('링크 복사에 실패했습니다.', 'error');
+      });
+  });
+
+  /* ==========================================================================
+     Reset to Initial State (Clicking Logo)
+     ========================================================================== */
+  logoBtn.addEventListener('click', () => {
+    body.classList.remove('qr-active');
+    body.classList.add('initial-state');
+    urlInput.value = '';
+    btnClear.classList.remove('visible');
+    currentTargetUrl = '';
+    qrcodeContainer.innerHTML = '';
+    if (inputHint) {
+      inputHint.querySelector('.hint-text').innerHTML =
+        '입력 후 <strong>확인</strong> 버튼이나 <strong>Enter</strong>를 누르면 QR코드가 생성됩니다.';
+    }
+    urlInput.focus();
+    showToast('처음 화면으로 돌아왔습니다.');
+  });
+
+  /* ==========================================================================
+     Toast Notifications
+     ========================================================================== */
+  function showToast(message, type = 'success') {
+    if (!toastNotification || !toastMessage) return;
+
+    toastMessage.textContent = message;
+
+    if (type === 'error') {
+      toastNotification.style.borderColor = '#ff5252';
+    } else {
+      toastNotification.style.borderColor = 'var(--brand-yellow)';
+    }
+
+    toastNotification.classList.add('show');
+
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+    }
+
+    toastTimer = setTimeout(() => {
+      toastNotification.classList.remove('show');
+    }, 3200);
+  }
+
+  /* ==========================================================================
+     Interactive Mouse-Driven Gradient Engine
+     ========================================================================== */
+  initInteractiveGradient();
+
+  function initInteractiveGradient() {
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+
+    let targetX = width / 2;
+    let targetY = height / 2;
+    let currentX = targetX;
+    let currentY = targetY;
+
+    let targetHue = 44;
+    let currentHue = 44;
+
+    const rootStyle = document.documentElement.style;
+
+    window.addEventListener('resize', () => {
+      width = window.innerWidth;
+      height = window.innerHeight;
+    });
+
+    const updateCoordinates = (clientX, clientY) => {
+      targetX = clientX;
+      targetY = clientY;
+
+      // Calculate hue shift based on mouse X and Y
+      // Hue range: 35deg (warm golden amber) to 52deg (sunny bright yellow)
+      const ratioX = Math.max(0, Math.min(1, clientX / (width || 1)));
+      const ratioY = Math.max(0, Math.min(1, clientY / (height || 1)));
+      targetHue = 35 + ratioX * 17 + (ratioY - 0.5) * 6;
+    };
+
+    window.addEventListener('pointermove', (e) => {
+      updateCoordinates(e.clientX, e.clientY);
+    });
+
+    window.addEventListener('touchmove', (e) => {
+      if (e.touches && e.touches[0]) {
+        updateCoordinates(e.touches[0].clientX, e.touches[0].clientY);
+      }
+    }, { passive: true });
+
+    // Smooth physics loop with LERP for fluid, buttery motion
+    function renderGradientLoop() {
+      const ease = 0.075;
+      currentX += (targetX - currentX) * ease;
+      currentY += (targetY - currentY) * ease;
+      currentHue += (targetHue - currentHue) * ease;
+
+      const percentX = (currentX / (width || 1)) * 100;
+      const percentY = (currentY / (height || 1)) * 100;
+
+      const tiltX = ((percentX - 50) / 50) * 45; // -45px to +45px
+      const tiltY = ((percentY - 50) / 50) * 45;
+
+      rootStyle.setProperty('--mouse-x', `${percentX.toFixed(2)}%`);
+      rootStyle.setProperty('--mouse-y', `${percentY.toFixed(2)}%`);
+      rootStyle.setProperty('--shift-h', `${currentHue.toFixed(2)}deg`);
+      rootStyle.setProperty('--mouse-tilt-x', `${tiltX.toFixed(2)}px`);
+      rootStyle.setProperty('--mouse-tilt-y', `${tiltY.toFixed(2)}px`);
+
+      requestAnimationFrame(renderGradientLoop);
+    }
+
+    requestAnimationFrame(renderGradientLoop);
+  }
+});
